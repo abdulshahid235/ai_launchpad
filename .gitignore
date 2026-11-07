@@ -1,6 +1,31 @@
+# Dependencies
 node_modules/
+
+# Next.js / build output
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Env and secrets — never commit real values
 .env
 .env.local
+.env.*.local
+
+# PGlite / local data
 .data/
+
+# Logs and OS noise
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 .DS_Store
+Thumbs.db
+
+# Test / e2e artifacts
+coverage/
+playwright-report/
+test-results/
+playwright/.auth/

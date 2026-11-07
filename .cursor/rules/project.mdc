@@ -1,0 +1,56 @@
+---
+description: App Launchpad local POC — architecture decisions and constraints for this repo
+alwaysApply: true
+---
+
+# App Launchpad — local POC constraints
+
+## Goal
+
+Local demo sandbox: catalog, one-step deploy, feedback, graduation check via PL/SQL reviewer.
+No Azure and no real Entra in local mode. Portkey is the real model gateway.
+
+## Keep these folders
+
+- `catalog/`, `template/`, `platform/` stay in place. Do not delete, move, or fork them for local mode.
+- Local-only packages: `auth-mock/`, `proxy/`, `deploy-agent/`.
+
+## Local mode is env-driven
+
+- `DB_DRIVER=pglite` | `pg` — same SQL migrations; adapter only at the connection layer.
+- `AUTH_ISSUER` / `AUTH_AUDIENCE` / `JWKS_URI` point at auth-mock locally; swapping to Entra is env change, not a code fork.
+- `APP_ENV=local` and `LOCAL_AUTH_MODE=true` together; refuse local auth overrides outside `local`.
+
+## Contract
+
+- `docs/api/catalog-openapi.yaml` is the source of truth.
+- API changes are **additive only** (optional fields, new routes). Do not break existing shapes or routes.
+
+## Deploy agent
+
+- Deploy through the `Runner` interface in `deploy-agent/`.
+- `ProcessRunner` is the non-Docker path; implement/finish `DockerRunner` when Docker is available.
+- Do not bypass `Runner` with one-off deploy scripts that skip registration/routing.
+
+## Secrets and hygiene
+
+- Never commit `.env`, keys, or tokens. Update `.env.example` with placeholders + one-line comments when adding variables.
+- Ignore `node_modules/`, `.next/`, build output, `.data/` (PGlite), and `*.log`.
+- Pin Node via `.nvmrc` and `engines` (`>=22.21.0 <23`). Commit lockfiles; prefer `npm ci`.
+
+## Default local stack
+
+- `npm ci && npm run dev` from repo root.
+- Ports: auth-mock `9100`, catalog `3000`, proxy `8080`, PGlite `54329`.
+- Seed users (password `password`): `owner@hni.test`, `tester@hni.test`, `approver@hni.test`.
+
+## Next work order
+
+1. DockerRunner  
+2. Template app as deployable sample  
+3. PL/SQL reviewer integration  
+4. Feedback API  
+5. Graduation check  
+6. Local seed data  
+
+Read `HANDOFF.md` and `README.md` before large changes. Prefer asking over inventing a second architecture.

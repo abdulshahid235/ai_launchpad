@@ -2,7 +2,7 @@
   "name": "catalog",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.21.0 <23"
   },
   "scripts": {
     "dev": "node scripts/dev-local.mjs",
