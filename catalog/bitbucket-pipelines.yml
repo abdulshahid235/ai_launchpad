@@ -1,0 +1,129 @@
+# Catalog pipeline.
+# Branch map (HNI-CICD-05): development -> dev, qa -> QA, main -> production.
+# Bitbucket reads a pipeline only from the repository root. This file also runs
+# when the catalog directory is the repository root. From the monorepo root, the
+# steps enter catalog/ themselves.
+#
+# Secured variables, set in Bitbucket and never written here:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#   ACR_NAME, ACR_LOGIN_SERVER
+#   CATALOG_APP_NAME, CATALOG_RESOURCE_GROUP
+#   DATABASE_URL
+#   CATALOG_TEST_DB_PASSWORD
+# BITBUCKET_STEP_OIDC_TOKEN is injected on oidc steps. Do not echo it.
+
+image: node:22.21.0
+
+definitions:
+  services:
+    docker:
+      memory: 3072
+  steps:
+    - step: &check
+        name: Typecheck, lint, test, dependency audit, and secret scan
+        services:
+          - docker
+        script:
+          - |
+            set -eu
+            apt-get update
+            apt-get install -y docker.io
+            if [ ! -f package.json ]; then cd catalog; fi
+            bash scripts/ci-postgres.sh
+            npm ci
+            npm run typecheck
+            npm run lint
+            export DATABASE_URL="postgres://catalog:${CATALOG_TEST_DB_PASSWORD}@127.0.0.1:5432/catalog"
+            export DATABASE_SSL_CA_FILE="$PWD/certs/server.crt"
+            npm test
+            npm audit --audit-level=high
+            npm run secret-scan
+
+    - step: &build
+        name: Import the Node base image and push the catalog image
+        oidc: true
+        services:
+          - docker
+        script:
+          - |
+            set -eu
+            apt-get update
+            apt-get install -y docker.io ca-certificates curl apt-transport-https gnupg
+            curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+            test -n "$AZURE_CLIENT_ID"
+            test -n "$AZURE_TENANT_ID"
+            test -n "$AZURE_SUBSCRIPTION_ID"
+            test -n "$ACR_NAME"
+            test -n "$ACR_LOGIN_SERVER"
+            test -n "$BITBUCKET_STEP_OIDC_TOKEN"
+            az login --service-principal \
+              --username "$AZURE_CLIENT_ID" \
+              --tenant "$AZURE_TENANT_ID" \
+              --federated-token "$BITBUCKET_STEP_OIDC_TOKEN"
+            az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+            az acr login --name "$ACR_NAME"
+            if ! az acr repository show --name "$ACR_NAME" --image node:22.21.0-bookworm-slim >/dev/null 2>&1; then
+              az acr import --name "$ACR_NAME" \
+                --source docker.io/library/node:22.21.0-bookworm-slim \
+                --image node:22.21.0-bookworm-slim
+            fi
+            if [ -f package.json ]; then ROOT="."; else ROOT="catalog"; fi
+            docker build \
+              --build-arg BASE_IMAGE="$ACR_LOGIN_SERVER/node:22.21.0-bookworm-slim" \
+              -t "$ACR_LOGIN_SERVER/catalog:$BITBUCKET_COMMIT" \
+              "$ROOT"
+            docker push "$ACR_LOGIN_SERVER/catalog:$BITBUCKET_COMMIT"
+
+    - step: &migrate # [HNI-CICD-06] Migrations run before the container update.
+        name: Run catalog database migrations
+        script:
+          - |
+            set -eu
+            test -n "$DATABASE_URL"
+            if [ ! -f package.json ]; then cd catalog; fi
+            npm ci
+            node scripts/migrate.mjs
+
+    - step: &deploy
+        name: Deploy the catalog container app
+        oidc: true
+        script:
+          - |
+            set -eu
+            apt-get update
+            apt-get install -y ca-certificates curl apt-transport-https gnupg
+            curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+            test -n "$BITBUCKET_STEP_OIDC_TOKEN"
+            az login --service-principal \
+              --username "$AZURE_CLIENT_ID" \
+              --tenant "$AZURE_TENANT_ID" \
+              --federated-token "$BITBUCKET_STEP_OIDC_TOKEN"
+            az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+            az containerapp update \
+              --name "$CATALOG_APP_NAME" \
+              --resource-group "$CATALOG_RESOURCE_GROUP" \
+              --image "$ACR_LOGIN_SERVER/catalog:$BITBUCKET_COMMIT"
+
+pipelines:
+  pull-requests:
+    "**":
+      - step: *check
+  branches:
+    development:
+      - step: *check
+      - step: *build
+      - step: *migrate
+      - step: *deploy
+    qa:
+      - step: *check
+      - step: *build
+      - step: *migrate
+      - step: *deploy
+    main:
+      - step: *check
+      - step: *build
+      - step: *migrate
+      - step:
+          <<: *deploy
+          name: Deploy the catalog container app
+          trigger: manual

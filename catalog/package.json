@@ -1,0 +1,41 @@
+{
+  "name": "catalog",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-local.mjs",
+    "dev:next": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "migrate": "node scripts/migrate.mjs",
+    "bootstrap": "node scripts/bootstrap-approver.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "tsx --test tests/auth.jwt.test.ts tests/public-config.test.ts tests/apps.api.test.ts",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@azure/msal-browser": "^4.26.1",
+    "@electric-sql/pglite": "0.5.15",
+    "@electric-sql/pglite-socket": "0.2.18",
+    "dotenv": "^17.2.3",
+    "jose": "^6.1.0",
+    "next": "^16.4.3",
+    "postgres": "^3.4.7",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^22.19.0",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "eslint": "^9.39.0",
+    "eslint-config-next": "^16.4.3",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

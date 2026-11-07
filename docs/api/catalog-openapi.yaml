@@ -1,0 +1,919 @@
+# Catalog API contract. The catalog service implements every path.
+# The template pipeline calls only POST /api/apps.
+# [HNI-API-01] REST methods and status codes.
+# [HNI-API-02] One success schema and one error schema for every path.
+# [HNI-API-04] Data routes require a verified caller. Health is the public exception.
+# [HNI-API-06] Owner is not a query parameter. Search covers name and description.
+# [HNI-AUTH-05] Bearer JWT, JWKS signature, aud, iss, exp, then the caller rules below.
+#   User routes take an Entra token. POST /api/apps takes the CI host's OIDC token.
+# [HNI-AUTH-08] The approver cannot be the requester or the pipeline the request is for.
+# [HNI-INFRA-07] /api/health is unauthenticated, minimal, and not rate limited.
+openapi: 3.0.3
+info:
+  title: App Launchpad catalog API
+  version: "1.2.0"
+  description: >
+    Registry of internal experiment apps. A signed-in user lists apps.
+    The first valid user login creates a Catalog.Read row. Role changes
+    are a separate operation for Catalog.Approve. A pipeline registers
+    the app its CI repository (ci_provider, repo_id) was approved to
+    publish, using the CI host's own OIDC token. A platform owner
+    decides approval requests and cannot approve their own. The first
+    Catalog.Approve user is inserted by catalog/scripts/bootstrap-approver.mjs,
+    which reads CATALOG_BOOTSTRAP_APPROVER_OID. No identity is written
+    in source. Audience is the catalog API application id from
+    AZURE_CLIENT_ID. Issuer is
+    https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0.
+    Dev deployments store synthetic identities only.
+servers:
+  - url: https://{catalogHost}
+    variables:
+      catalogHost:
+        default: catalog.example.internal
+        description: Deployed catalog hostname.
+security:
+  - entraJwt: []
+tags:
+  - name: health
+  - name: apps
+  - name: approvals
+  - name: roles
+paths:
+  /api/health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe
+      description: >
+        No authentication and no rate limit. Does not query the database
+        or any other dependency. The body uses the same success schema as
+        every other 200. data is empty.
+      security: []
+      responses:
+        "200":
+          description: Process is up.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+              example:
+                status: ok
+                data: []
+                next_cursor: null
+                has_more: false
+  /api/apps:
+    get:
+      tags: [apps]
+      operationId: listApps
+      summary: List registered apps
+      description: >
+        User token only. A pipeline token receives 403 wrong_caller_type.
+        The first valid user login inserts a Catalog.Read row when none
+        exists and does not change an existing role. Returns one page.
+        q matches app name and description only. It does not match owner,
+        because an owner is personal data and must not be placed in the
+        query string. status limits the page to active or retired.
+        Each returned app is an access to personal data (owner_object_id)
+        and is written to the access audit. That write is not a control
+        record. A write failure is logged on the server without the
+        personal-data value and does not change the HTTP status.
+        Without q the limit is 300 requests per minute per oid. With q
+        the limit is 20 requests per minute per oid. No export route exists.
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive match on app name and description.
+          schema:
+            type: string
+            maxLength: 80
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/AppStatus"
+      responses:
+        "200":
+          description: One page of apps.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+              example:
+                status: ok
+                data:
+                  - kind: app
+                    id: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                    name: experiment-notes
+                    owner_object_id: 11111111-1111-1111-1111-111111111111
+                    description: Synthetic notes experiment.
+                    url: https://experiment-notes.example.internal
+                    revision: a1b2c3d4
+                    status: active
+                    updated_at: "2026-10-30T15:04:00.000Z"
+                next_cursor: null
+                has_more: false
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+    post:
+      tags: [apps]
+      operationId: registerApp
+      summary: Register or update an app by name
+      description: >
+        CI OIDC token only (ciOidc). Entra tokens are not accepted on this
+        route and receive 401 invalid_token. The server loads the approved
+        binding for body.name. No binding is 403 app_not_bound. The
+        binding's ci_provider selects the token validator. A provider the
+        catalog has no validator for is 403 unknown_ci_provider. The
+        validator checks signature, iss, aud, and exp, and returns the
+        provider's stable repository id. The sub claim is never used. A
+        repo id that differs from the binding's repo_id is 403
+        app_not_bound. The rate limit is per (ci_provider, repo_id).
+        The catalog writes the
+        registry row. The pipeline does not write the database. Upsert is
+        by app name. 201 when the row is created, 200 when it already
+        exists. An update changes url, revision, and description, which
+        the pipeline copies from app.yaml. It does not change owner or
+        status, and it does not reactivate a retired app. A create or a
+        field change writes an audit record with actor, action, record id,
+        UTC time, and before/after values. The actor is
+        "<ci_provider>:<repo_id>". That audit write must not roll back a
+        successful registry write.
+      security:
+        - ciOidc: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterApp"
+            example:
+              name: experiment-notes
+              owner_object_id: 11111111-1111-1111-1111-111111111111
+              description: Synthetic notes experiment.
+              url: https://experiment-notes.example.internal
+              revision: a1b2c3d4
+      responses:
+        "200":
+          description: Existing app updated or left unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "201":
+          description: App created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+  /api/apps/{name}/feedback:
+    get:
+      tags: [apps]
+      operationId: listAppFeedback
+      summary: List feedback for an app
+      description: >
+        Additive route. User token only. Returns feedback rows for the
+        named app, newest first. Does not change existing apps routes.
+      parameters:
+        - $ref: "#/components/parameters/appName"
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: One page of feedback.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+    post:
+      tags: [apps]
+      operationId: createAppFeedback
+      summary: Submit feedback for an app
+      description: >
+        Additive route. User token only. Creates a feedback row for the
+        named app. Rating is 1-5. Comment is optional.
+      parameters:
+        - $ref: "#/components/parameters/appName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateFeedback"
+      responses:
+        "201":
+          description: Feedback created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+  /api/apps/{name}:
+    patch:
+      tags: [apps]
+      operationId: patchApp
+      summary: Change owner, description, or status
+      description: >
+        User token with database role Catalog.Approve. Updates owner,
+        description, or status. Retire sets status to retired. There is
+        no delete. Both the field change and a status change write an
+        audit record with before and after values. Name in the path is
+        the app name, not a person.
+      parameters:
+        - $ref: "#/components/parameters/appName"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchApp"
+      responses:
+        "200":
+          description: App updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+  /api/approvals:
+    get:
+      tags: [approvals]
+      operationId: listApprovals
+      summary: List approval requests
+      description: >
+        User token only. A Catalog.Approve caller sees every request.
+        Any other active user sees only requests whose requester is their
+        own oid. The server applies that filter. Clients cannot pass
+        another person's id.
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+        - name: decision
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/Decision"
+      responses:
+        "200":
+          description: One page of approval requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+    post:
+      tags: [approvals]
+      operationId: createApproval
+      summary: Ask for an app to be approved
+      description: >
+        User token only. The requester is the token oid. The body cannot
+        name a different requester. Creating a request does not grant
+        Catalog.Register and does not write the app registry. The limit
+        is 30 requests per minute per oid, and a requester may have at
+        most 5 pending requests. The sixth pending request returns 409
+        approval_cap_reached. The new approval row is a control record.
+        If it cannot be written, nothing is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApproval"
+            example:
+              app_name: experiment-notes
+              bitbucket_repo: launchpad/experiment-notes
+              environment: dev
+              pipeline_client_id: 22222222-2222-2222-2222-222222222222
+              federated_subject: repository:launchpad/experiment-notes:environment:dev
+              ci_provider: bitbucket
+              repo_id: "{1de489be-ce6a-42a0-a8c8-eadbf1174ac7}"
+      responses:
+        "201":
+          description: Pending approval stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: >
+            A pending request already exists for this app name, or this
+            requester already has 5 pending requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: approval_cap_reached
+                  message: This caller already has the maximum number of pending approvals.
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+  /api/approvals/{approvalId}/decision:
+    post:
+      tags: [approvals]
+      operationId: decideApproval
+      summary: Approve or reject a request
+      description: >
+        Catalog.Approve only, and only for this record. The server loads
+        the row by approvalId and rejects the call with 403
+        self_approval_rejected when the caller is the requester, the
+        pipeline client the request is for, or an identity that principal
+        acts for. The comparison uses the database row and the verified
+        token. The decision row is a control record. If it cannot be
+        written, the approval does not take effect. The stored
+        approver_subject is the sub claim of the verified approver token.
+        The body cannot supply it. Approve copies the request's
+        federated_subject, ci_provider, and repo_id onto the pipeline
+        binding used by register. A (ci_provider, repo_id) already bound
+        to a different app is 409 conflict.
+        Reject stores the rejection and does not create a binding.
+        A separate audit entry records the status change and must not
+        undo a decision row that was stored.
+      parameters:
+        - $ref: "#/components/parameters/approvalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [approved, rejected]
+      responses:
+        "200":
+          description: Decision stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: This request was already decided.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: conflict
+                  message: This approval was already decided.
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+  /api/roles:
+    post:
+      tags: [roles]
+      operationId: changeRole
+      summary: Change a user's catalog role
+      description: >
+        User token with database role Catalog.Approve. Sets another
+        user's role to Catalog.Read or Catalog.Approve. The target
+        object id is in the body, not the URL. The caller cannot change
+        their own role. The role row is a control record. The change
+        writes an audit entry with the before and after role. Login
+        never changes a role.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleChange"
+      responses:
+        "200":
+          description: Role stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Success"
+        "400":
+          $ref: "#/components/responses/ValidationFailed"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/DatabaseUnavailable"
+components:
+  securitySchemes:
+    entraJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Entra ID v2 access token. On every data route the server checks
+        the signature against
+        https://login.microsoftonline.com/{AZURE_TENANT_ID}/discovery/v2.0/keys,
+        then aud, iss, and exp. aud must equal AZURE_CLIENT_ID. iss must
+        equal https://login.microsoftonline.com/{AZURE_TENANT_ID}/v2.0.
+        Only RS256 is accepted. alg none is rejected. JWKS keys may be
+        cached for 5 to 10 minutes, with a stale key used if the JWKS
+        endpoint is briefly unavailable. Validation results are not
+        cached. A user token has a delegated scp claim or idtyp user.
+        An Entra token with idtyp app is 403 wrong_caller_type on user
+        routes. Easy Auth headers are not credentials, including
+        X-MS-CLIENT-PRINCIPAL, X-MS-CLIENT-PRINCIPAL-ID,
+        X-MS-CLIENT-PRINCIPAL-NAME, and X-MS-TOKEN-AAD-ACCESS-TOKEN.
+    ciOidc:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        The CI host's OIDC token, sent as is. Used only by POST /api/apps.
+        One validator per ci_provider. bitbucket: the step token
+        (BITBUCKET_STEP_OIDC_TOKEN). iss must equal
+        https://api.bitbucket.org/2.0/workspaces/{CATALOG_BITBUCKET_WORKSPACE}/pipelines-config/identity/oidc.
+        Keys come from the jwks_uri in that issuer's
+        /.well-known/openid-configuration, which must be under the issuer.
+        Only RS256 is accepted. aud must include
+        CATALOG_BITBUCKET_AUDIENCE, a custom audience the pipeline step
+        requests under oidc.audiences. The workspace default audience is
+        not accepted, because every token in the workspace carries it.
+        exp is required. repo_id is the repositoryUuid claim, braces
+        included, compared in lower case. sub is not read: Bitbucket ends
+        it with a per-run step UUID.
+  parameters:
+    limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque keyset cursor from next_cursor. Not an object id.
+      schema:
+        type: string
+        maxLength: 512
+    approvalId:
+      name: approvalId
+      in: path
+      required: true
+      description: Server-generated UUID. Not a sequential integer.
+      schema:
+        type: string
+        format: uuid
+    appName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 63
+        pattern: "^[a-z0-9]+([._-][a-z0-9]+)*$"
+  responses:
+    Unauthorized:
+      description: >
+        Missing bearer token, or the token failed signature, aud, iss,
+        exp, tenant, or required-claim checks. Missing oid on a user
+        route and a missing or malformed repositoryUuid on the register
+        route are included.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: invalid_token
+              message: The bearer token is missing or was not accepted.
+    Forbidden:
+      description: >
+        The token was verified and the caller still may not perform this
+        action. Codes include inactive_user, missing_role,
+        wrong_caller_type, app_not_bound, unknown_ci_provider, and
+        self_approval_rejected.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: self_approval_rejected
+              message: The caller cannot approve this request.
+    ValidationFailed:
+      description: A body, path, or query value failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: validation_failed
+              message: The request body did not match the contract.
+    NotFound:
+      description: No record exists for this id or name.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: not_found
+              message: No matching record exists.
+    TooManyRequests:
+      description: >
+        Per-caller limits. Health is not limited. List and register are
+        300 requests per minute, list with q is 20, and creating an
+        approval is 30. The catalog runs with a maximum of one replica,
+        so the limiter may keep its window in memory. A second replica
+        requires a shared store before the limit is enforced there.
+      headers:
+        Retry-After:
+          description: Seconds until the caller may retry.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: rate_limited
+              message: Too many requests. Retry after the indicated delay.
+    DatabaseUnavailable:
+      description: >
+        DATABASE_URL is unset, or the database cannot be reached. Returned
+        by data routes only. The message does not include a connection
+        string.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: database_unavailable
+              message: The catalog database is not configured.
+  schemas:
+    Success:
+      type: object
+      additionalProperties: false
+      required: [status, data, next_cursor, has_more]
+      description: >
+        Every HTTP 200 and 201 uses this object. List routes put one page
+        in data and set next_cursor and has_more. A null next_cursor is the
+        last page. Create, update, and decision routes return the affected
+        resource as the only data element and set has_more to false.
+        Health returns an empty data array.
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Resource"
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: >
+        Every 4xx and 5xx uses this object. HTTP status carries the
+        outcome. message is safe for the client. No stack trace, SQL
+        text, token, or connection string.
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_token
+                - inactive_user
+                - missing_role
+                - wrong_caller_type
+                - app_not_bound
+                - unknown_ci_provider
+                - self_approval_rejected
+                - validation_failed
+                - not_found
+                - conflict
+                - approval_cap_reached
+                - rate_limited
+                - database_unavailable
+                - internal_error
+            message:
+              type: string
+              maxLength: 300
+    Resource:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      description: One app, approval request, or user role row.
+      properties:
+        kind:
+          type: string
+          enum: [app, approval, user, feedback]
+        id:
+          type: string
+        name:
+          type: string
+        owner_object_id:
+          type: string
+          format: uuid
+          description: Entra object id of the accountable person.
+        owner_display_name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        url:
+          type: string
+          format: uri
+        revision:
+          type: string
+        updated_at:
+          type: string
+          format: date-time
+          description: UTC time of the last write to the app row. Present on GET /api/apps items.
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Optional UTC expiry for the app listing. Absent or null means no
+            expiry. Additive field; older clients may ignore it.
+        status:
+          $ref: "#/components/schemas/AppStatus"
+        app_id:
+          type: string
+          format: uuid
+          description: Present on feedback resources.
+        user_object_id:
+          type: string
+          format: uuid
+          description: Present on feedback resources. The reviewer.
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Present on feedback resources.
+        comment:
+          type: string
+          nullable: true
+          description: Present on feedback resources.
+        created_at:
+          type: string
+          format: date-time
+          description: Present on feedback resources.
+        app_name:
+          type: string
+        bitbucket_repo:
+          type: string
+        environment:
+          $ref: "#/components/schemas/Environment"
+        requester_object_id:
+          type: string
+          format: uuid
+        pipeline_client_id:
+          type: string
+          format: uuid
+        federated_subject:
+          type: string
+          description: Bitbucket OIDC subject accepted for the pipeline credential.
+        ci_provider:
+          $ref: "#/components/schemas/CiProvider"
+        repo_id:
+          type: string
+          description: Stable repository id from the CI provider. Binding key with ci_provider.
+        approver_subject:
+          type: string
+          description: sub claim from the approver token that decided this request.
+        decision:
+          $ref: "#/components/schemas/Decision"
+        object_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/CatalogRole"
+    AppStatus:
+      type: string
+      enum: [active, retired]
+    Decision:
+      type: string
+      enum: [pending, approved, rejected]
+    CatalogRole:
+      type: string
+      enum: [Catalog.Read, Catalog.Approve]
+    Environment:
+      type: string
+      enum: [dev, qa, production]
+    CiProvider:
+      type: string
+      minLength: 1
+      maxLength: 32
+      description: >
+        CI host whose OIDC token register accepts. The catalog accepts a
+        value only when it has a validator for it. Supported now: bitbucket.
+        Any other value is 403 unknown_ci_provider.
+    RegisterApp:
+      type: object
+      additionalProperties: false
+      required: [name, owner_object_id, description, url, revision]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: "^[a-z0-9]+([._-][a-z0-9]+)*$"
+        owner_object_id:
+          type: string
+          format: uuid
+        owner_display_name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+        url:
+          type: string
+          format: uri
+          pattern: "^https://[^\\s]+$"
+        revision:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Revision recorded in the pipeline's app.yaml.
+    PatchApp:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        owner_object_id:
+          type: string
+          format: uuid
+        owner_display_name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+        status:
+          $ref: "#/components/schemas/AppStatus"
+    CreateApproval:
+      type: object
+      additionalProperties: false
+      required:
+        - app_name
+        - bitbucket_repo
+        - environment
+        - pipeline_client_id
+        - federated_subject
+        - ci_provider
+        - repo_id
+      properties:
+        app_name:
+          type: string
+          minLength: 1
+          maxLength: 63
+          pattern: "^[a-z0-9]+([._-][a-z0-9]+)*$"
+        bitbucket_repo:
+          type: string
+          minLength: 3
+          maxLength: 200
+          pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+          description: Bitbucket workspace and repository. Not a remote URL.
+        environment:
+          $ref: "#/components/schemas/Environment"
+        pipeline_client_id:
+          type: string
+          format: uuid
+          description: >
+            Entra application id of the pipeline that will call register.
+            Not a secret. Compared with the token azp claim.
+        federated_subject:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: >
+            Bitbucket OIDC subject configured on that application's
+            federated credential. The approver accepts this value by
+            deciding the request. The decision body cannot replace it.
+        ci_provider:
+          $ref: "#/components/schemas/CiProvider"
+        repo_id:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >
+            Stable repository id the CI token must carry. For bitbucket,
+            the repository UUID with braces, as shown in the repository's
+            Pipelines OpenID Connect settings. Validated per provider. The
+            approver accepts this value by deciding the request.
+    RoleChange:
+      type: object
+      additionalProperties: false
+      required: [object_id, role]
+      properties:
+        object_id:
+          type: string
+          format: uuid
+        role:
+          $ref: "#/components/schemas/CatalogRole"
+    CreateFeedback:
+      type: object
+      additionalProperties: false
+      required: [rating]
+      description: Additive body for POST /api/apps/{name}/feedback.
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type: string
+          maxLength: 2000
+          nullable: true

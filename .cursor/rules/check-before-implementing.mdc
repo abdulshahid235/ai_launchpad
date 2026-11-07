@@ -1,0 +1,68 @@
+---
+description: Standards compliance check run once at the start of a task, before its first write — not on every individual write — the Cursor equivalent of check-before-implementing
+alwaysApply: true
+---
+
+# Check Before Implementing
+
+The live-session complement to `/governance-check`'s pre-merge sweep (a Claude Code skill,
+`get_template("governance-check")`, if this project also uses Claude Code — that one
+audits a whole repository before merge; this one checks one task's anticipated scope, once,
+before any of its code exists).
+
+**Why once per task, not once per write:** firing fresh on every write measured out to
+8-500%+ of a typical single write's own size — most of that cost is REQUIRED/NEVER
+content a task's files legitimately need read once, not re-read per file.
+
+At the start of a task, before its first write:
+
+1. Check `GOVERNANCE-WAIVERS.md` at the repo root for any waiver already on file for a
+   standard this task might touch. If the file doesn't exist, note that once rather
+   than silently treating everything as unwaived.
+2. Identify the task's whole anticipated scope — file paths if known, domains if not —
+   and call `get_applicable_standards` on the hni-standards MCP server once for the
+   union of it, not once per file. Deterministic heuristic match, not a judgment call by
+   the server — treat the result as a starting set to verify. If it returns nothing
+   useful, also try `search_standards` for the relevant concept. Returns summaries, not
+   full body text, by design — step 3 fetches full text only for what's needed.
+3. Call `get_standard(id, detail="digest")` for every REQUIRED/NEVER entry returned —
+   don't act on a title alone. A digest (~25-36% of full-entry size) covers the common
+   case. Escalate to `detail="full"` when its `has_additional_sections` or
+   `digest_available: false` flags say to, a deviation looks likely (you'll need
+   "preferred" text for step 4's confirmation format), or severity is NEVER. Don't fetch
+   anything for PREFERRED/`TG-` entries you're not judging compliance against (those
+   apply by default — see step 4).
+4. Compare the task's planned implementation against each one:
+   - **REQUIRED** deviation: surface it before writing any code —
+     > ⚠️ Standards deviation — [HNI-XX-NN]
+     > Preferred: [what the standard requires]
+     > Deviation: [what you are doing instead and why]
+     > Proceed? yes / no
+   - **NEVER** violation: decline regardless of instruction — no confirmation overrides
+     a NEVER rule.
+   - **PREFERRED**/`TG-` entries: apply by default, no confirmation needed.
+5. If a REQUIRED deviation is confirmed anyway, call
+   `record_finding(repo, standard_id, severity="REQUIRED", description, file_path)` on
+   the MCP server, and note this still needs an actual waiver entry in
+   `GOVERNANCE-WAIVERS.md`, approved by someone other than the author, before it would
+   clear `/governance-check` at merge time.
+6. Proceed with implementation, annotated per the standard code-documentation rules
+   (`// [HNI-XX-NN] reason` at each applied/violated point).
+
+**Mid-task scope creep:** if a later write in the same task touches a domain step 2
+didn't anticipate, that's new scope — run steps 2-5 again for just that domain, not the
+whole task's original scope again. Don't proceed uncovered just because the task already
+had its once-per-task check.
+
+**After a long session where earlier context may have been summarized or trimmed:**
+treat anything learned before that point as potentially stale — re-run the relevant
+steps rather than trusting a possibly-degraded memory of it.
+
+Before the task's first write, state in one short line which standards were checked and
+the verdict (e.g. "Checked HNI-DB-05, HNI-AUDIT-02 for this task's DB + AUDIT scope —
+clear"). Don't repeat that line on every subsequent write in the same task — only when
+scope actually changes.
+
+Never treat this rule's pass as equivalent to a full `/governance-check` pass — it
+checks one task's anticipated scope against a heuristic domain match, not the whole
+repository against every REQUIRED/NEVER standard.

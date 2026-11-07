@@ -1,0 +1,140 @@
+# One local stack: Postgres, catalog, token issuer, and the sample tenant.
+# Postgres and the catalog moved here from catalog/docker-compose.yml.
+services:
+  postgres:
+    image: postgres:16.10
+    environment:
+      POSTGRES_USER: catalog
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: catalog
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./catalog/certs:/certs
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        if [ ! -f /certs/server.crt ]; then
+          openssl req -new -x509 -days 365 -nodes \
+            -addext subjectAltName=DNS:postgres,DNS:localhost,IP:127.0.0.1 \
+            -keyout /certs/server.key -out /certs/server.crt \
+            -subj /CN=postgres
+        fi
+        chown postgres:postgres /certs/server.key /certs/server.crt
+        chmod 600 /certs/server.key
+        chmod 644 /certs/server.crt
+        exec docker-entrypoint.sh postgres \
+          -c ssl=on \
+          -c ssl_cert_file=/certs/server.crt \
+          -c ssl_key_file=/certs/server.key
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U catalog -d catalog"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build:
+      context: ./catalog
+      target: migrate
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:?Set BASE_IMAGE to the pinned Node image in ACR}
+        # Local proxy inspection only. CI builds leave NPM_STRICT_SSL at its default, true.
+        NPM_STRICT_SSL: "false"
+    environment:
+      DATABASE_URL: postgres://catalog:${POSTGRES_PASSWORD}@postgres:5432/catalog
+      DATABASE_SSL_CA_FILE: /certs/server.crt
+    volumes:
+      - ./catalog/certs:/certs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    build:
+      context: ./catalog
+      target: migrate
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:?Set BASE_IMAGE to the pinned Node image in ACR}
+        # Local proxy inspection only. CI builds leave NPM_STRICT_SSL at its default, true.
+        NPM_STRICT_SSL: "false"
+    environment:
+      DATABASE_URL: postgres://catalog:${POSTGRES_PASSWORD}@postgres:5432/catalog
+      DATABASE_SSL_CA_FILE: /certs/server.crt
+      APP_ENV: local
+      LOCAL_AUTH_MODE: "true"
+    command: ["node", "scripts/seed-demo.mjs"]
+    volumes:
+      - ./catalog/certs:/certs:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  issuer:
+    image: node:22.21.0-bookworm-slim
+    command: ["node", "/demo/issuer.mjs"]
+    volumes:
+      - ./scripts:/demo:ro
+    environment:
+      ISSUER_PORT: "8080"
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-00000000-0000-4000-8000-000000000001}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-00000000-0000-4000-8000-000000000002}
+      CATALOG_BITBUCKET_WORKSPACE: ${CATALOG_BITBUCKET_WORKSPACE:-launchpad-demo}
+      CATALOG_BITBUCKET_AUDIENCE: ${CATALOG_BITBUCKET_AUDIENCE:-api://launchpad-catalog-demo}
+    ports:
+      - "8080:8080"
+
+  catalog:
+    build:
+      context: ./catalog
+      target: runner
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:?Set BASE_IMAGE to the pinned Node image in ACR}
+        # Local proxy inspection only. CI builds leave NPM_STRICT_SSL at its default, true.
+        NPM_STRICT_SSL: "false"
+    environment:
+      DATABASE_URL: postgres://catalog:${POSTGRES_PASSWORD}@postgres:5432/catalog
+      DATABASE_SSL_CA_FILE: /certs/server.crt
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-00000000-0000-4000-8000-000000000001}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-00000000-0000-4000-8000-000000000002}
+      CATALOG_JWKS_URI: http://issuer:8080/keys
+      CATALOG_BITBUCKET_JWKS_URI: http://issuer:8080/keys
+      CATALOG_BITBUCKET_WORKSPACE: ${CATALOG_BITBUCKET_WORKSPACE:-launchpad-demo}
+      CATALOG_BITBUCKET_AUDIENCE: ${CATALOG_BITBUCKET_AUDIENCE:-api://launchpad-catalog-demo}
+      CATALOG_ALLOWED_ORIGINS: ${CATALOG_ALLOWED_ORIGINS:-}
+      CATALOG_MAX_REPLICAS: "1"
+      APP_ENV: local
+      LOCAL_AUTH_MODE: "true"
+      HOSTNAME: 0.0.0.0
+    volumes:
+      - ./catalog/certs:/certs:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      issuer:
+        condition: service_started
+      seed:
+        condition: service_completed_successfully
+
+  sample:
+    build:
+      context: ./template
+      args:
+        NEXT_PUBLIC_AZURE_CLIENT_ID: ${NEXT_PUBLIC_AZURE_CLIENT_ID:-}
+        NEXT_PUBLIC_AZURE_TENANT_ID: ${NEXT_PUBLIC_AZURE_TENANT_ID:-}
+        # Local proxy inspection only. CI builds leave NPM_STRICT_SSL at its default, true.
+        NPM_STRICT_SSL: "false"
+    environment:
+      HOSTNAME: 0.0.0.0
+      APP_ENV: local
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-00000000-0000-4000-8000-000000000001}
+      AZURE_CLIENT_ID: ${AZURE_CLIENT_ID:-00000000-0000-4000-8000-000000000002}
+      TEMPLATE_JWKS_URI: http://issuer:8080/keys
+      LOCAL_AUTH_MODE: "true"
+    ports:
+      - "3001:3000"
+    depends_on:
+      issuer:
+        condition: service_started

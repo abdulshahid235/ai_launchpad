@@ -1,0 +1,20 @@
+{
+  "name": "ai-launchpad",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "catalog",
+    "auth-mock",
+    "proxy",
+    "deploy-agent"
+  ],
+  "scripts": {
+    "dev": "npx concurrently -k -n auth,catalog,proxy -c cyan,green,magenta \"npm run dev -w auth-mock\" \"npm run dev -w catalog\" \"npm run dev -w proxy\"",
+    "migrate": "npm run migrate -w catalog"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

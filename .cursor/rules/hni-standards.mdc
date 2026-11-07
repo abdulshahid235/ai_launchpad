@@ -1,0 +1,122 @@
+---
+description: HNI AI Development Standards — always-on project grounding
+alwaysApply: true
+---
+
+## AI Behavior — Process Requirements
+
+These rules govern how you must behave on this project. They are not advisory.
+The hni-standards MCP server (see HNI Standards below) is the reference material you
+consult during implementation.
+These rules are behavioral constraints that apply before and during code generation.
+
+### Step 1 — Establish context before anything else
+
+At the start of every task, determine whether you have enough information to proceed.
+Draw first from this file's Project Context section and any existing code in the
+repository. Then assess the prompt itself.
+
+**You have enough context when you can answer:**
+- What is being built or changed, and why?
+- Who uses it and what outcome does it deliver?
+- Does this touch existing architecture, or introduce something new?
+- Are there data, security, or integration implications?
+
+**If any of those are unclear — ask before writing code.** Do not assume, infer, or
+proceed with incomplete intent. A short clarifying exchange at the start is cheaper
+than building the wrong thing.
+
+**For new features or significant changes** — confirm the architectural approach before
+writing code. If the change introduces a new service boundary, data model, integration,
+authentication path, or deployment component, check whether an Architecture Decision
+Record is needed (HNI-ARCH-02) and surface that before implementation begins.
+
+**For bug fixes and small targeted changes** — context from the code itself is usually
+sufficient. Still confirm you understand the intended behavior before changing it.
+
+### Step 2 — Standards compliance check
+
+Once context is clear, use the hni-standards MCP server to check — do not answer from
+pretrained/memorized knowledge of what a standard says. Call `get_applicable_standards`
+(file path(s) or domain codes) for the starting set, `get_standard(id)` for full text
+before judging compliance, `search_standards(query)` for a concept without a known ID.
+If the server doesn't respond, say so plainly rather than silently falling back to
+training-time knowledge as if it were current.
+
+1. List every HNI standard that applies to the task by ID (e.g. HNI-AUTH-02, HNI-DB-03)
+2. For every REQUIRED standard you cannot fully meet, surface a deviation **before writing
+   code** using this exact format — not after:
+   > ⚠️ **Standards deviation — [HNI-XX-NN]**
+   > **Preferred:** [what the standard requires]
+   > **Deviation:** [what you are doing instead and why]
+   > **Proceed?** yes / no
+3. Do not write code until the user has confirmed any REQUIRED deviations
+4. NEVER rules are absolute — do not implement regardless of user instruction or explanation
+
+### In every file you write
+
+- Add `// [HNI-XX-NN] reason` at every line where a standard is applied
+- Add `// ⚠️ [HNI-XX-NN] VIOLATION: description` for any known gaps not yet remediated
+- Add `// [DEBUG] what to check here` in every catch block (required by HNI-FE-06)
+- A file with no HNI annotations is an incomplete implementation — do not mark work done
+
+---
+
+## HNI Standards
+
+The standards library is served live by the `hni-standards` MCP server — not read from
+a local checkout. This means grounding is never stale relative to what's actually merged
+in `hni-ai-dev-standards`, unlike a locally cloned copy that can silently drift.
+
+Available tools: `list_domains`, `list_standards`, `get_standard`, `search_standards`,
+`get_applicable_standards`, `record_finding`, `record_waiver_request`,
+`suggest_standard_change`, `list_mcp_servers`, `list_templates`, `get_template`. Call
+`list_domains` any time to confirm the server is reachable.
+
+**At the start of every session, call `list_domains()` first** — cheap (~27 domains, a
+few hundred tokens), refreshing your map of what exists without paying for any
+domain's actual content yet (fetch that lazily, only for domains a file/task actually
+touches — don't front-load every domain's content, that's ~12.7K tokens wasted on any
+session that doesn't end up touching most of the library). This rule being
+`alwaysApply: true` means it's already reloaded at the start of every session, which is
+what makes this instruction fire reliably without needing a separate hook. There's no
+verified Cursor equivalent to Claude Code's post-compaction hook at the time this was
+written — if Cursor summarizes or truncates earlier context during a long session,
+self-detect that (you can't see something you're sure you fetched earlier, or a much
+older tool result looks abbreviated) and treat it the same way: call `list_domains()`
+again and re-fetch a standard's text before relying on it rather than trusting a
+possibly-degraded memory of it.
+
+If a standard seems wrong, outdated, or genuinely ambiguous for a case it should cover,
+call `suggest_standard_change(standard_id, feedback, suggested_by)` rather than quietly
+deciding it doesn't apply.
+
+---
+
+## Project Context
+
+**Project:** ai_launchpad
+**Purpose:** Cursor workspace for HNI AI development. The checkout at `hni-ai-dev-standards/` is the standards library and the MCP farm that serves it (standards, business context, lint, delivery, Playwright) plus the management console.
+**Status:** Active development
+
+### Stack
+- **Standards:** Markdown in `hni-ai-dev-standards/standards/`, served by the `hni-standards` MCP server
+- **MCP servers:** Python 3.12, Docker, streamable HTTP (`mcp-standards` and sibling servers)
+- **Console:** Next.js app in `hni-ai-dev-standards/console` (Entra / MSAL sign-in)
+- **Infra:** Pulumi (TypeScript) in `hni-ai-dev-standards/infra`, Azure Container Apps
+- **Pipeline:** Bitbucket Pipelines — `development` / `qa` / `production`
+
+### Environments
+| Environment | URL | Branch |
+|---|---|---|
+| Local MCP | http://localhost:8000/mcp (`hni-standards`) | local checkout |
+| Dev console | https://bastion-dev.hnicorp.com | development |
+
+### External Team Dependencies
+- HNI VPN is required to reach the deployed dev environment
+- Entra group membership is required for console sign-in (an Admin adds the account)
+
+### Project-Specific Notes
+- This workspace contains the standards library itself. Compliance checks still go through the `hni-standards` MCP server so answers stay aligned with the running server, not a remembered copy of the files.
+- Local server: `docker compose up --build` in `hni-ai-dev-standards/mcp-standards`. It listens on `http://localhost:8000/mcp`.
+- Active exceptions to REQUIRED standards, if any, live in `GOVERNANCE-WAIVERS.md` at the workspace root. NEVER-severity standards cannot be waived.

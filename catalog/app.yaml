@@ -1,0 +1,3 @@
+name: catalog
+description: Internal registry of experiment apps.
+revision: "1"

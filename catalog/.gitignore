@@ -1,0 +1,8 @@
+node_modules
+.next
+*.tsbuildinfo
+.env
+certs
+playwright/.auth
+playwright-report
+test-results

@@ -1,0 +1,51 @@
+# Tenant pipeline. Real steps are scripts/ci/. This file only enables OIDC,
+# passes CI values through, and calls those scripts.
+#
+# Secured variables, set in the CI host and never written here:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_CLIENT_SECRET
+#   AZURE_SUBSCRIPTION_ID, ACR_NAME, ACR_LOGIN_SERVER, APP_NAME
+#   CONTAINER_APP_NAME, RESOURCE_GROUP, CATALOG_URL
+#   OWNER_OBJECT_ID, APP_DESCRIPTION, APP_URL
+#   NEXT_PUBLIC_AZURE_CLIENT_ID, NEXT_PUBLIC_AZURE_TENANT_ID
+
+image: node:22.21.0
+
+definitions:
+  services:
+    docker:
+      memory: 3072
+  steps:
+    - step: &check
+        name: Lint
+        script:
+          - npm ci
+          - npm run lint
+
+    - step: &release
+        name: Login, build, push, deploy, and register
+        oidc: true
+        services:
+          - docker
+        script:
+          - export REVISION="$BITBUCKET_COMMIT"
+          - export CI_OIDC_TOKEN="$BITBUCKET_STEP_OIDC_TOKEN"
+          - export IMAGE="$ACR_LOGIN_SERVER/apps/$APP_NAME:$BITBUCKET_COMMIT"
+          - sh scripts/ci/login.sh
+          - sh scripts/ci/build.sh
+          - sh scripts/ci/push.sh
+          - sh scripts/ci/deploy.sh
+          - sh scripts/ci/register.sh
+
+pipelines:
+  branches:
+    development:
+      - step: *check
+      - step: *release
+    qa:
+      - step: *check
+      - step: *release
+    main:
+      - step: *check
+      - step:
+          <<: *release
+          trigger: manual

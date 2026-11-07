@@ -1,0 +1,69 @@
+/* Design tokens for the catalog UI. template/ can copy this file when it adopts the same system. */
+
+:root {
+  color-scheme: light;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --bg: #f4f3ef;
+  --card: #ffffff;
+  --text: #1c1e21;
+  --muted: #4e5964;
+  --navy: #0b3a82;
+  --navy-hover: #082f6b;
+  --border-color: #e3e1db;
+  --shadow: 0 1px 2px rgba(28, 30, 33, 0.06), 0 8px 24px rgba(28, 30, 33, 0.05);
+  --shadow-lift: 0 4px 8px rgba(28, 30, 33, 0.07), 0 16px 32px rgba(28, 30, 33, 0.08);
+  --focus: #0b3a82;
+  --hover: rgba(11, 58, 130, 0.06);
+  --radius: 12px;
+  --space-1: 8px;
+  --space-2: 16px;
+  --space-3: 24px;
+  --space-4: 32px;
+  --space-5: 40px;
+  --space-6: 48px;
+  --good-bg: #e3f6ea;
+  --good-text: #0e5a34;
+  --wait-bg: #fbf1d6;
+  --wait-text: #6a4300;
+  --muted-bg: #eceef1;
+  --muted-text: #3e4651;
+  --avatar-bg: #e7eef8;
+  --avatar-text: #0b3a82;
+  --retired-bg: #f3f2ee;
+  --disabled-bg: #e6e5e1;
+  --disabled-text: #5c6570;
+  --skeleton: #eceae4;
+  --skeleton-hi: #f7f6f3;
+  --segment-bg: #eeede8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #121417;
+    --card: #1c2026;
+    --text: #f2f4f7;
+    --muted: #c2c8d0;
+    --navy: #0b3a82;
+    --navy-hover: #12479c;
+    --border-color: #323843;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.28);
+    --shadow-lift: 0 6px 16px rgba(0, 0, 0, 0.4), 0 16px 32px rgba(0, 0, 0, 0.35);
+    --focus: #9db7ef;
+    --hover: rgba(255, 255, 255, 0.06);
+    --good-bg: #143322;
+    --good-text: #b6ebcd;
+    --wait-bg: #3a2e12;
+    --wait-text: #f3dc9a;
+    --muted-bg: #2a3038;
+    --muted-text: #d5dae2;
+    --avatar-bg: #243044;
+    --avatar-text: #d5e2f8;
+    --retired-bg: #181b20;
+    --disabled-bg: #2a3038;
+    --disabled-text: #9aa3ad;
+    --skeleton: #262b33;
+    --skeleton-hi: #323843;
+    --segment-bg: #262b33;
+  }
+}
